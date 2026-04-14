@@ -1,0 +1,27 @@
+---
+
+
+
+##
+##        DEBUG OUTPUT
+##
+
+
+
+- name: "xtoph-bastion : main : ***** BEGIN XTOPH_BASTION ROLE PROCESSING *****"
+  debug: msg="inventory_hostname={{ inventory_hostname }}"
+
+- name: "xtoph-bastion : main : include bastion-dns"
+  include_tasks: "bastion-dns.yml"
+
+
+
+##
+##    DEBUG OUTPUT
+##
+
+
+
+- name: "main.yml : ***** END XTOPH_BASTION ROLE PROCESSING *****"
+  debug: msg="inventory_hostname={{ inventory_hostname }}"
+

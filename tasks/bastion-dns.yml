@@ -1,0 +1,224 @@
+- delegate_to: "{{ groups.myBastion[0] }}"
+  block:
+
+      #
+      #    Gather facts about the bastion host
+      #
+
+      - name: "rhel10-workshop : config-bastion-dns : populate service facts"
+        when: inventory_hostname == groups.myBastion[0]
+        service_facts:
+
+
+      #
+      #    Package installation
+      #
+      
+      - name: "rhel10-workshop : bastion-dns : package installation"
+        when: inventory_hostname == groups.myBastion[0]
+        yum: 
+          name:  dnsmasq 
+          state: installed
+
+
+
+      #
+      #    NOTE: This project does NOT play nice with other projects
+      #          that monkey with dnsmasq configs.  Bastion host
+      #          should be a dedicated system for this workshop
+      #    
+      #    Cleanup any previous dnsmasq configs, IPs and hostnames   
+      #    
+      
+      - name: "rhel10-workshop : bastion-dns : clean cfg directory"
+        when: inventory_hostname == groups.myBastion[0]
+        shell:
+          cmd: |
+            if [[ -d "/etc/dnsmasq.d" ]] ; then rm -rf /etc/dnsmasq.d/* ; fi
+
+
+
+      #
+      #    Put a friendly note in /etc/hosts to 
+      #    inform people that the config parameters
+      #    are in /etc/dnsmasq.d
+      #
+ 
+      - name: "rhel10-workshop : bastion-dns : add comment to /etc/hosts"
+        when: inventory_hostname == groups.myBastion[0]
+        blockinfile:
+          dest:   "/etc/hosts"
+          insertbefore: BOF
+          block: |
+            ##
+            ## NOTE - RHEL10-Workshop
+            ## NOTE - resolv.conf should point to localhost 127.0.0.1
+            ## NOTE - this host is the domain master for [[TBD]]
+            ## NOTE - every node in myBastion, myNodes & myLeap should add themselves to /etc/hosts
+            ##
+          state:  present
+
+
+
+      #
+      #    We need to disable networkmanager 
+      #    from toying with /etc/resolv.conf
+      #
+
+      - name: "rhel10-workshop : bastion-dns : disable network-manager /etc/resolv.conf adjustments"
+        when: inventory_hostname == groups.myBastion[0]
+        template:
+          src:   "dns-resolv-fix.j2"
+          dest:  "/etc/NetworkManager/conf.d/90-dns-none.conf"
+          owner: root
+      
+      - name: "rhel10-workshop : bastion-dns : restart networkmanager service"
+        when: inventory_hostname == groups.myBastion[0]
+        service: name=NetworkManager state=reloaded enabled=yes
+
+
+
+      #
+      #    Deploy a /etc/resolv.conf that 
+      #    points to our bastion dns server
+      #
+ 
+      - name: "rhel10-workshop : bastion-dns : deploy resolv.conf"
+        when: inventory_hostname == groups.myBastion[0]
+        vars: 
+          - p_search:     "{{ workshop_vars.network_subdomain }}"
+          - p_nameserver: "127.0.0.1"
+        template:
+          src:   "dns-resolv-conf.j2"
+          dest:  "/etc/resolv.conf"
+          owner: root
+
+      - name: "rhel10-workshop : bastion-dns : adjust /etc/dnsmasq.conf with except-interface"
+        when: inventory_hostname == groups.myBastion[0]
+        lineinfile:
+          dest: "/etc/dnsmasq.conf"
+          insertafter: "^#except-interface=.*$"
+          line: "except-interface=virbr0"
+          state: present
+
+      - name: "rhel10-workshop : bastion-dns : adjust /etc/dnsmasq.conf with bind-interfaces"
+        when: inventory_hostname == groups.myBastion[0]
+        lineinfile:
+          dest: "/etc/dnsmasq.conf"
+          insertafter: "^#bind-interfaces.*$"
+          line: "bind-interfaces"
+          state: present
+
+      - name: "rhel10-workshop : bastion-dns : disable the listen on loopback interface only config"
+        when: inventory_hostname == groups.myBastion[0]
+        replace:
+          dest: "/etc/dnsmasq.conf"
+          regexp: "^interface=lo"
+          replace: "#interface=lo"
+
+
+
+      #
+      #    Deploy dnsmasq standard options
+      #
+
+      - name: "rhel10-workshop : bastion-dns : deploy STANDARD options"
+        when: inventory_hostname == groups.myBastion[0]
+        vars:
+          - p_nameServer:      "{{ workshop_vars.network_nameserver }}"
+          - p_subdomain:       "{{ workshop_vars.network_subdomain }}"
+        template:
+          src:   "dnsmasq-standard-opts.j2"
+          dest:  "/etc/dnsmasq.d/30-standard-opts.conf"
+          owner: root
+          group: root
+          mode:  644
+
+
+
+      #
+      #    All Nodes: add yourself to a simple entry in /etc/hosts
+      #
+
+      - name: "rhel10-workshop : bastion-dns : cleanup conflicting IP in /etc/hosts"
+        throttle: 1
+        lineinfile:
+          dest:   "/etc/hosts"
+          regexp: "{{ h_netIP }} .*$"
+          state:  absent
+
+      - name: "rhel10-workshop : bastion-dns : cleanup conflicting name in /etc/hosts"
+        throttle: 1
+        lineinfile:
+          dest:   "/etc/hosts"
+          regexp: ".*{{ inventory_hostname }}.*"
+          state:  absent
+
+      - name: "rhel10-workshop : bastion-dns : config-bastion-dns : add entry in /etc/hosts"
+        throttle: 1
+        lineinfile:
+          dest:   "/etc/hosts"
+          line:   "{{ h_netIP }} {{ inventory_hostname }}"
+          state:  present
+          insertbefore: "^127.0.0.1.*"
+
+
+
+      #
+      #    Last couple of items:
+      #
+      #      disable nscd       dnsmasq already performs caching
+      #      firewall rules     add 'dns' to firewalld if firewalld is enabled
+      #      systemd overrides  add restart=always to dnsmasq service
+      #      service restart    
+      #
+      
+      - name: "rhel10-workshop : bastion-dns : service disable"
+        when: inventory_hostname == groups.myBastion[0]
+        service:
+          name: "{{ item }}"
+          enabled: no
+          state: stopped
+          masked: no
+        when: 
+          - ansible_facts['services']['nscd.service']['state'] is defined
+        with_items:
+          - 'nscd.socket'
+          - 'nscd.service'
+
+      - name: "rhel10-workshop : bastion-dns : firewalld add service dns"
+        when: inventory_hostname == groups.myBastion[0]
+        firewalld:
+          service: dns
+          immediate: yes
+          permanent: yes
+          state: enabled
+        when: 
+          - ansible_facts['services']['firewalld.service']['state'] is defined
+          - ansible_facts['services']['firewalld.service']['state'] == 'running'
+
+      - name: "rhel10-workshop : bastion-dns : create systemd override directory"
+        when: inventory_hostname == groups.myBastion[0]
+        file:
+          path: /etc/systemd/system/dnsmasq.service.d
+          mode: "0755"
+          state: directory
+         
+      - name: "rhel10-workshop : bastion-dns : deploy systemd override config"
+        when: inventory_hostname == groups.myBastion[0]
+        template:
+          src: "dnsmasq-systemd-overrides.j2"
+          dest: "/etc/systemd/system/dnsmasq.service.d/overrides.conf"
+          owner: root
+          group: root
+          mode: 644
+      
+      - name: "rhel10-workshop : bastion-dns : service restart dnsmasq "
+        when: inventory_hostname == groups.myBastion[0]
+        service: 
+           name: dnsmasq 
+           state: restarted 
+           enabled: yes 
+           daemon_reload: yes
+
+
